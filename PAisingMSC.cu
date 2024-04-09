@@ -60,7 +60,8 @@ const unsigned int CC = 1013904223;
 const int boltzTableL = 2;			// Boltzmann factor table length
 const int nBmax = 10000;			// number of temperature steps should not exceed nBmax
 
-texture<unsigned int,1,cudaReadModeElementType> boltzT;
+__device__ cudaTextureObject_t boltzT;
+cudaTextureObject_t boltzT_h;
 using namespace std;
 
 #define EQthreads 128	// number of threads per block for the equilibration kernel
@@ -219,8 +220,8 @@ __global__ void checkKerALL(Replica* Rd, int rg, unsigned int sweeps, unsigned l
 			MultiSpin cond4 = 0;
 			MultiSpin cond8 = 0; MultiSpin imask=0x1; ran = curand(&localrng);
 			for (unsigned char i = 0; i < MSbits; ++i){
-				cond4 |= (-(ran < tex1Dfetch(boltzT, 0))) & imask;
-				cond8 |= (-(ran < tex1Dfetch(boltzT, 1))) & imask;
+				cond4 |= (-(ran < tex1Dfetch<unsigned int>(boltzT, 0))) & imask;
+				cond8 |= (-(ran < tex1Dfetch<unsigned int>(boltzT, 1))) & imask;
 				imask <<= 1;	ran = AA * ran + CC;
 			}
 			// acceptance mask
@@ -252,8 +253,8 @@ __global__ void checkKerALL(Replica* Rd, int rg, unsigned int sweeps, unsigned l
 			MultiSpin cond4 = 0;
 			MultiSpin cond8 = 0; MultiSpin imask=0x1; ran = curand(&localrng);
 			for (unsigned char i = 0; i < MSbits; ++i){
-				cond4 |= (-(ran < tex1Dfetch(boltzT, 0))) & imask;
-				cond8 |= (-(ran < tex1Dfetch(boltzT, 1))) & imask;
+				cond4 |= (-(ran < tex1Dfetch<unsigned int>(boltzT, 0))) & imask;
+				cond8 |= (-(ran < tex1Dfetch<unsigned int>(boltzT, 1))) & imask;
 				imask <<= 1;	ran = AA * ran + CC;
 			}	
 			MultiSpin Acc = (sum1|sum2) | ( (~(sum1|sum2)) & ((sum0&cond4) | (~sum0&cond8)) );
@@ -633,8 +634,26 @@ int main(int argc, char** argv)
 	// memory allocation for Boltzmann factor table
 	CUDAErrChk( cudaMalloc((void **)&boltztext, boltzTableL * sizeof(unsigned int)) );
 	// binding references (global & texture memory buffers)
-	CUDAErrChk( cudaBindTexture(NULL,boltzT,boltztext,boltzTableL * sizeof(unsigned int)) );
-	
+	// CUDAErrChk( cudaBindTexture(NULL,boltzT,boltztext,boltzTableL * sizeof(unsigned int)) );
+
+	{
+		// create a ressource descriptor based on device pointers
+        struct cudaResourceDesc resDescLinear;
+        memset(&resDescLinear, 0, sizeof(resDescLinear));
+        resDescLinear.resType = cudaResourceTypeLinear;
+        resDescLinear.res.linear.devPtr = boltztext;
+        resDescLinear.res.linear.desc = cudaCreateChannelDesc<unsigned int>();
+        resDescLinear.res.linear.sizeInBytes = boltzTableL * sizeof(unsigned int);
+
+        // create a texture descriptor for simple linear texture
+        struct cudaTextureDesc texDescLinear;
+        memset(&texDescLinear, 0, sizeof(texDescLinear));
+        texDescLinear.readMode = cudaReadModeElementType;
+
+        CUDAErrChk(cudaCreateTextureObject(&boltzT_h, &resDescLinear, &texDescLinear, nullptr));
+		CUDAErrChk(cudaMemcpyToSymbol(boltzT, &boltzT_h, sizeof(cudaTextureObject_t)));
+	}
+
 	int Ethreads = 1; while(Ethreads < EQthreads) Ethreads <<= 1;
 
 	for (int r = rmin; r <= rmax; ++r){	
@@ -946,7 +965,7 @@ int main(int argc, char** argv)
 	CUDAErrChk( cudaFree(Ridev) );
 	CUDAErrChk( cudaFree(Qd) );	
 	CUDAErrChk( cudaFree(ioverlapd) );
-	CUDAErrChk( cudaUnbindTexture(boltzT) );
+	CUDAErrChk( cudaDestroyTextureObject(boltzT_h) );
 	CUDAErrChk( cudaFree(boltztext));
 
 	CUDAErrChk( cudaDeviceSynchronize() );

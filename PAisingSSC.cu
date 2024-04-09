@@ -56,7 +56,8 @@ int OutputPrecision = 11;				// precision (number of digits) of the output
 const int boltzTableL = 10;				// Boltzmann factor table length
 const int nBmax = 10000;                                // number of temperature steps should not exceed nBmax
 
-texture<int2,1,cudaReadModeElementType> boltzT;
+__device__ cudaTextureObject_t boltzT;
+cudaTextureObject_t boltzT_h;
 using namespace std;
 
 #define EQthreads 128	// number of threads per block for the equilibration kernel
@@ -87,9 +88,9 @@ inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=t
 	}
 }
 
-static __inline__ __device__ double fetch_double(texture<int2,1> t, int i) // texture fetching for double precision floats
+static __inline__ __device__ double fetch_double(cudaTextureObject_t t, int i) // texture fetching for double precision floats
 {
-	int2 v = tex1Dfetch(t,i);
+	int2 v = tex1Dfetch<int2>(t,i);
 	return __hiloint2double(v.y, v.x);
 }
 
@@ -474,7 +475,23 @@ int main(int argc, char** argv)
 	// memory allocation for Boltzmann factor table
 	CUDAErrChk( cudaMalloc((void **)&boltztext, boltzTableL * sizeof(double)) );
 	// binding references (global & texture memory buffers)
-	CUDAErrChk( cudaBindTexture(NULL,boltzT,boltztext,boltzTableL * sizeof(double)) );
+	{
+		// create a ressource descriptor based on device pointers
+        struct cudaResourceDesc resDescLinear;
+        memset(&resDescLinear, 0, sizeof(resDescLinear));
+        resDescLinear.resType = cudaResourceTypeLinear;
+        resDescLinear.res.linear.devPtr = boltztext;
+        resDescLinear.res.linear.desc = cudaCreateChannelDesc<int2>();
+        resDescLinear.res.linear.sizeInBytes = boltzTableL * sizeof(double);
+
+        // create a texture descriptor for simple linear texture
+        struct cudaTextureDesc texDescLinear;
+        memset(&texDescLinear, 0, sizeof(texDescLinear));
+        texDescLinear.readMode = cudaReadModeElementType;
+
+        CUDAErrChk(cudaCreateTextureObject(&boltzT_h, &resDescLinear, &texDescLinear, nullptr));
+		CUDAErrChk(cudaMemcpyToSymbol(boltzT, &boltzT_h, sizeof(cudaTextureObject_t)));
+	}
 
 	int Ethreads = 1; while(Ethreads < EQthreads) Ethreads <<= 1;
 
@@ -794,7 +811,7 @@ int main(int argc, char** argv)
 	CUDAErrChk( cudaFree(Ridev) );
 	CUDAErrChk( cudaFree(Qd) );
 	CUDAErrChk( cudaFree(ioverlapd) );
-	CUDAErrChk( cudaUnbindTexture(boltzT) );
+	CUDAErrChk( cudaDestroyTextureObject(boltzT_h) );
 	CUDAErrChk( cudaFree(boltztext));
 
 	CUDAErrChk( cudaDeviceSynchronize() );
